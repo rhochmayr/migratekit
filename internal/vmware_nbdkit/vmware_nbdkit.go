@@ -188,6 +188,9 @@ func buildV2VDomainXML(vmName string, paths []string) (string, error) {
 
 	var disks strings.Builder
 	for i, p := range paths {
+		if p == "" {
+			return "", fmt.Errorf("disk %d has empty source path", i)
+		}
 		devName := fmt.Sprintf("vd%c", 'a'+rune(i))
 		fmt.Fprintf(&disks,
 			"    <disk type='block' device='disk'>\n"+
@@ -253,8 +256,22 @@ func (s *NbdkitServers) MigrationCycle(ctx context.Context, runV2V bool) error {
 	if runV2V {
 		paths := make([]string, len(synced))
 		for i, dt := range synced {
-			paths[i] = dt.path
+			if err := dt.target.Connect(ctx); err != nil {
+				return fmt.Errorf("re-attach disk %d for v2v: %w", i, err)
+			}
+			p, err := dt.target.GetPath(ctx)
+			if err != nil {
+				return fmt.Errorf("get path for disk %d for v2v: %w", i, err)
+			}
+			if p == "" {
+				return fmt.Errorf("disk %d (volume on VM %s) has no resolvable device path; cannot run virt-v2v-in-place", i, s.VirtualMachine.Name())
+			}
+			paths[i] = p
 		}
+
+		log.WithFields(log.Fields{
+			"paths": paths,
+		}).Info("Resolved device paths for virt-v2v-in-place")
 
 		xmlContent, err := buildV2VDomainXML(s.VirtualMachine.Name(), paths)
 		if err != nil {

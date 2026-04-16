@@ -1,6 +1,7 @@
 package vmware_nbdkit
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -66,6 +67,13 @@ func TestBuildV2VDomainXML_TooManyDisks(t *testing.T) {
 	_, err := buildV2VDomainXML("big-vm", paths)
 	if err == nil {
 		t.Error("expected error for >26 disks, got nil")
+	}
+}
+
+func TestBuildV2VDomainXML_EmptyPathInSlice(t *testing.T) {
+	_, err := buildV2VDomainXML("vm", []string{"/dev/sda", "", "/dev/sdc"})
+	if err == nil {
+		t.Error("expected error for empty path in slice, got nil")
 	}
 }
 
