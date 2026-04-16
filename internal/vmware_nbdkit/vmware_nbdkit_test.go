@@ -41,12 +41,12 @@ func TestBuildV2VDomainXML_MultiDisk(t *testing.T) {
 	}
 
 	for i, p := range paths {
-		devName := string(rune('a' + i))
+		devName := fmt.Sprintf("vd%c", 'a'+rune(i))
 		if !strings.Contains(xml, "<source dev='"+p+"'/>") {
 			t.Errorf("expected source dev '%s' in XML", p)
 		}
-		if !strings.Contains(xml, "<target dev='vd"+devName+"' bus='virtio'/>") {
-			t.Errorf("expected target dev 'vd%s' in XML", devName)
+		if !strings.Contains(xml, "<target dev='"+devName+"' bus='virtio'/>") {
+			t.Errorf("expected target dev '%s' in XML", devName)
 		}
 	}
 }

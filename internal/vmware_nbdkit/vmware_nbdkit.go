@@ -275,8 +275,6 @@ func (s *NbdkitServers) MigrationCycle(ctx context.Context, runV2V bool) error {
 
 		log.Info("Running virt-v2v-in-place")
 
-		os.Setenv("LIBGUESTFS_BACKEND", "direct")
-
 		var cmd *exec.Cmd
 		if s.VddkConfig.Debug {
 			cmd = exec.Command("virt-v2v-in-place", "-v", "-x", "-i", "libvirtxml", tmpFile.Name())
@@ -284,6 +282,7 @@ func (s *NbdkitServers) MigrationCycle(ctx context.Context, runV2V bool) error {
 			cmd = exec.Command("virt-v2v-in-place", "-i", "libvirtxml", tmpFile.Name())
 		}
 
+		cmd.Env = append(os.Environ(), "LIBGUESTFS_BACKEND=direct")
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 
