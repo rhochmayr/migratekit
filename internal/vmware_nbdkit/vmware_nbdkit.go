@@ -2,10 +2,12 @@ package vmware_nbdkit
 
 import (
 	"context"
+	"fmt"
 	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	log "github.com/sirupsen/logrus"
@@ -172,6 +174,49 @@ func (s *NbdkitServers) Stop(ctx context.Context) error {
 	return nil
 }
 
+// buildV2VDomainXML generates a minimal libvirt domain XML referencing each
+// supplied block-device path as a virtio disk. The target dev names are vda,
+// vdb, … vdz (at most 26 disks). Returns an error if paths is empty or
+// contains more than 26 entries.
+func buildV2VDomainXML(vmName string, paths []string) (string, error) {
+	if len(paths) == 0 {
+		return "", fmt.Errorf("no disk paths provided")
+	}
+	if len(paths) > 26 {
+		return "", fmt.Errorf("too many disks (%d); at most 26 are supported", len(paths))
+	}
+
+	var disks strings.Builder
+	for i, p := range paths {
+		devName := fmt.Sprintf("vd%c", 'a'+rune(i))
+		fmt.Fprintf(&disks,
+			"    <disk type='block' device='disk'>\n"+
+				"      <driver name='qemu' type='raw'/>\n"+
+				"      <source dev='%s'/>\n"+
+				"      <target dev='%s' bus='virtio'/>\n"+
+				"    </disk>\n",
+			p, devName)
+	}
+
+	xml := fmt.Sprintf(`<domain type='kvm'>
+  <name>%s</name>
+  <memory unit='MiB'>2048</memory>
+  <vcpu>1</vcpu>
+  <os>
+    <type arch='x86_64'>hvm</type>
+  </os>
+  <devices>
+%s  </devices>
+</domain>`, vmName, disks.String())
+
+	return xml, nil
+}
+
+type diskTarget struct {
+	path   string
+	target target.Target
+}
+
 func (s *NbdkitServers) MigrationCycle(ctx context.Context, runV2V bool) error {
 	err := s.Start(ctx)
 	if err != nil {
@@ -184,19 +229,71 @@ func (s *NbdkitServers) MigrationCycle(ctx context.Context, runV2V bool) error {
 		}
 	}()
 
-	for index, server := range s.Servers {
+	var synced []diskTarget
+
+	for _, server := range s.Servers {
 		t, err := target.NewOpenStack(ctx, s.VirtualMachine, server.Disk)
 		if err != nil {
 			return err
 		}
 
-		if index != 0 {
-			runV2V = false
-		}
-
-		err = server.SyncToTarget(ctx, t, runV2V)
+		err = server.SyncToTarget(ctx, t)
 		if err != nil {
 			return err
+		}
+
+		path, err := t.GetPath(ctx)
+		if err != nil {
+			return err
+		}
+
+		synced = append(synced, diskTarget{path: path, target: t})
+	}
+
+	if runV2V {
+		paths := make([]string, len(synced))
+		for i, dt := range synced {
+			paths[i] = dt.path
+		}
+
+		xmlContent, err := buildV2VDomainXML(s.VirtualMachine.Name(), paths)
+		if err != nil {
+			return err
+		}
+
+		tmpFile, err := os.CreateTemp("", "migratekit-v2v-*.xml")
+		if err != nil {
+			return err
+		}
+		defer os.Remove(tmpFile.Name())
+
+		if _, err := tmpFile.WriteString(xmlContent); err != nil {
+			tmpFile.Close()
+			return err
+		}
+		tmpFile.Close()
+
+		log.Info("Running virt-v2v-in-place")
+
+		var cmd *exec.Cmd
+		if s.VddkConfig.Debug {
+			cmd = exec.Command("virt-v2v-in-place", "-v", "-x", "-i", "libvirtxml", tmpFile.Name())
+		} else {
+			cmd = exec.Command("virt-v2v-in-place", "-i", "libvirtxml", tmpFile.Name())
+		}
+
+		cmd.Env = append(os.Environ(), "LIBGUESTFS_BACKEND=direct")
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+
+		if err := cmd.Run(); err != nil {
+			return err
+		}
+
+		for _, dt := range synced {
+			if err := dt.target.WriteChangeID(ctx, &vmware.ChangeID{}); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -308,7 +405,7 @@ func (s *NbdkitServer) IncrementalCopyToTarget(ctx context.Context, t target.Tar
 	return nil
 }
 
-func (s *NbdkitServer) SyncToTarget(ctx context.Context, t target.Target, runV2V bool) error {
+func (s *NbdkitServer) SyncToTarget(ctx context.Context, t target.Target) error {
 	snapshotChangeId, err := vmware.GetChangeID(s.Disk)
 	if err != nil {
 		return err
@@ -356,35 +453,9 @@ func (s *NbdkitServer) SyncToTarget(ctx context.Context, t target.Target, runV2V
 		}
 	}
 
-	if runV2V {
-		log.Info("Running virt-v2v-in-place")
-
-		os.Setenv("LIBGUESTFS_BACKEND", "direct")
-
-		var cmd *exec.Cmd
-		if s.Servers.VddkConfig.Debug {
-			cmd = exec.Command("virt-v2v-in-place", "-v", "-x", "-i", "disk", path)
-		} else {
-			cmd = exec.Command("virt-v2v-in-place", "-i", "disk", path)
-		}
-
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-
-		err := cmd.Run()
-		if err != nil {
-			return err
-		}
-
-		err = t.WriteChangeID(ctx, &vmware.ChangeID{})
-		if err != nil {
-			return err
-		}
-	} else {
-		err = t.WriteChangeID(ctx, snapshotChangeId)
-		if err != nil {
-			return err
-		}
+	err = t.WriteChangeID(ctx, snapshotChangeId)
+	if err != nil {
+		return err
 	}
 
 	return nil
