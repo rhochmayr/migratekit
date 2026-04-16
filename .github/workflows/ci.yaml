@@ -31,5 +31,6 @@ jobs:
         with:
           context: .
           push: ${{ github.event_name == 'push' }}
+          no-cache: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
