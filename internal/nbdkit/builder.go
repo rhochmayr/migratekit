@@ -79,7 +79,6 @@ func (b *NbdkitBuilder) Build() (*NbdkitServer, error) {
 	socket := fmt.Sprintf("%s/nbdkit.sock", tmp)
 	pidFile := fmt.Sprintf("%s/nbdkit.pid", tmp)
 
-	os.Setenv("LD_LIBRARY_PATH", "/usr/lib64/vmware-vix-disklib/lib64")
 	cmd := exec.Command(
 		"nbdkit",
 		"--exit-with-parent",
@@ -98,6 +97,27 @@ func (b *NbdkitBuilder) Build() (*NbdkitServer, error) {
 		"transports=file:nbdssl:nbd",
 		b.filename,
 	)
+
+	// Scope LD_LIBRARY_PATH to this nbdkit child only.
+	//
+	// nbdkit's VDDK plugin needs VMware's bundled libraries under
+	// /usr/lib64/vmware-vix-disklib/lib64 on its library search path.
+	// Previously this was done with os.Setenv(), which mutates migratekit's
+	// own process environment and is therefore inherited by every subsequent
+	// child — including virt-v2v-in-place and the supermin it spawns.
+	//
+	// VMware VDDK ships its own libcrypto.so.3 / libssl.so.3 under that
+	// directory. When they take precedence over Fedora's /lib64 versions,
+	// librpm_sequoia.so.1 (used by supermin) ends up linked against VDDK's
+	// libcrypto, which lacks the EVP_idea_cfb64 symbol that Fedora's
+	// rpm-sequoia requires, producing:
+	//
+	//   /usr/bin/supermin: symbol lookup error: /lib64/librpm_sequoia.so.1:
+	//   undefined symbol: EVP_idea_cfb64, version OPENSSL_3.0.0
+	//
+	// Using cmd.Env (instead of os.Setenv) confines LD_LIBRARY_PATH to the
+	// nbdkit invocation so downstream children see a clean environment.
+	cmd.Env = append(os.Environ(), "LD_LIBRARY_PATH=/usr/lib64/vmware-vix-disklib/lib64")
 
 	return &NbdkitServer{
 		cmd:     cmd,
