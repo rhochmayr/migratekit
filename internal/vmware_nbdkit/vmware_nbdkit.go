@@ -220,6 +220,46 @@ type diskTarget struct {
 	target target.Target
 }
 
+// connectAllForV2V re-attaches each disk in disks to its target and resolves
+// its device path for use by virt-v2v-in-place. It returns the resolved paths
+// and a cleanup function that disconnects every successfully connected target.
+// The caller must invoke cleanup (typically via defer) to ensure volumes are
+// returned to "available" status after virt-v2v-in-place finishes.
+// If an error occurs mid-loop, cleanup is called before returning.
+func connectAllForV2V(ctx context.Context, disks []diskTarget, vmName string) ([]string, func(), error) {
+	paths := make([]string, len(disks))
+	connected := make([]target.Target, 0, len(disks))
+	cleanup := func() {
+		for i, t := range connected {
+			if derr := t.Disconnect(ctx); derr != nil {
+				log.WithError(derr).WithField("disk", i).
+					Warn("Failed to detach target volume after virt-v2v-in-place")
+			}
+		}
+	}
+
+	for i, dt := range disks {
+		if err := dt.target.Connect(ctx); err != nil {
+			cleanup()
+			return nil, nil, fmt.Errorf("re-attach disk %d for v2v: %w", i, err)
+		}
+		connected = append(connected, dt.target)
+
+		p, err := dt.target.GetPath(ctx)
+		if err != nil {
+			cleanup()
+			return nil, nil, fmt.Errorf("get path for disk %d for v2v: %w", i, err)
+		}
+		if p == "" {
+			cleanup()
+			return nil, nil, fmt.Errorf("disk %d (volume on VM %s) has no resolvable device path; cannot run virt-v2v-in-place", i, vmName)
+		}
+		paths[i] = p
+	}
+
+	return paths, cleanup, nil
+}
+
 func (s *NbdkitServers) MigrationCycle(ctx context.Context, runV2V bool) error {
 	err := s.Start(ctx)
 	if err != nil {
@@ -254,20 +294,11 @@ func (s *NbdkitServers) MigrationCycle(ctx context.Context, runV2V bool) error {
 	}
 
 	if runV2V {
-		paths := make([]string, len(synced))
-		for i, dt := range synced {
-			if err := dt.target.Connect(ctx); err != nil {
-				return fmt.Errorf("re-attach disk %d for v2v: %w", i, err)
-			}
-			p, err := dt.target.GetPath(ctx)
-			if err != nil {
-				return fmt.Errorf("get path for disk %d for v2v: %w", i, err)
-			}
-			if p == "" {
-				return fmt.Errorf("disk %d (volume on VM %s) has no resolvable device path; cannot run virt-v2v-in-place", i, s.VirtualMachine.Name())
-			}
-			paths[i] = p
+		paths, cleanup, err := connectAllForV2V(ctx, synced, s.VirtualMachine.Name())
+		if err != nil {
+			return err
 		}
+		defer cleanup()
 
 		log.WithFields(log.Fields{
 			"paths": paths,
