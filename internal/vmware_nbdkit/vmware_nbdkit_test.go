@@ -13,12 +13,12 @@ import (
 // fakeTarget is a test double for target.Target that records Connect and
 // Disconnect calls and can be configured to return controlled paths/errors.
 type fakeTarget struct {
-	disk           *types.VirtualDisk
-	connectCalls   int
-	disconnectCall int
-	path           string
-	connectErr     error
-	getPathErr     error
+	disk            *types.VirtualDisk
+	connectCalls    int
+	disconnectCalls int
+	path            string
+	connectErr      error
+	getPathErr      error
 }
 
 func (f *fakeTarget) GetDisk() *types.VirtualDisk { return f.disk }
@@ -29,7 +29,7 @@ func (f *fakeTarget) Connect(_ context.Context) error {
 }
 
 func (f *fakeTarget) Disconnect(_ context.Context) error {
-	f.disconnectCall++
+	f.disconnectCalls++
 	return nil
 }
 
@@ -71,15 +71,15 @@ func TestConnectAllForV2V_DetachesOnSuccess(t *testing.T) {
 	}
 
 	// Before cleanup, no disconnects yet.
-	if ft1.disconnectCall != 0 || ft2.disconnectCall != 0 {
+	if ft1.disconnectCalls != 0 || ft2.disconnectCalls != 0 {
 		t.Error("expected no Disconnect before cleanup()")
 	}
 
 	cleanup()
 
-	if ft1.disconnectCall != 1 || ft2.disconnectCall != 1 {
+	if ft1.disconnectCalls != 1 || ft2.disconnectCalls != 1 {
 		t.Errorf("expected 1 Disconnect per disk after cleanup(), got %d and %d",
-			ft1.disconnectCall, ft2.disconnectCall)
+			ft1.disconnectCalls, ft2.disconnectCalls)
 	}
 }
 
@@ -105,12 +105,12 @@ func TestConnectAllForV2V_DetachesOnConnectError(t *testing.T) {
 	}
 
 	// The first disk must have been disconnected as part of the error cleanup.
-	if ft1.disconnectCall != 1 {
-		t.Errorf("expected 1 Disconnect for first disk on error, got %d", ft1.disconnectCall)
+	if ft1.disconnectCalls != 1 {
+		t.Errorf("expected 1 Disconnect for first disk on error, got %d", ft1.disconnectCalls)
 	}
 	// The second disk never connected, so no Disconnect expected.
-	if ft2.disconnectCall != 0 {
-		t.Errorf("expected 0 Disconnect for failed disk, got %d", ft2.disconnectCall)
+	if ft2.disconnectCalls != 0 {
+		t.Errorf("expected 0 Disconnect for failed disk, got %d", ft2.disconnectCalls)
 	}
 }
 
@@ -135,15 +135,13 @@ func TestConnectAllForV2V_DetachesOnEmptyPath(t *testing.T) {
 	}
 
 	// Both disks connected before the empty-path check, so both should be disconnected.
-	if ft1.disconnectCall != 1 {
-		t.Errorf("expected 1 Disconnect for first disk, got %d", ft1.disconnectCall)
+	if ft1.disconnectCalls != 1 {
+		t.Errorf("expected 1 Disconnect for first disk, got %d", ft1.disconnectCalls)
 	}
-	if ft2.disconnectCall != 1 {
-		t.Errorf("expected 1 Disconnect for second disk (connected before path check), got %d", ft2.disconnectCall)
+	if ft2.disconnectCalls != 1 {
+		t.Errorf("expected 1 Disconnect for second disk (connected before path check), got %d", ft2.disconnectCalls)
 	}
 }
-
-
 
 func TestBuildV2VDomainXML_SingleDisk(t *testing.T) {
 	xml, err := buildV2VDomainXML("test-vm", []string{"/dev/vda"})
